@@ -484,13 +484,11 @@ async function endConversation(chatItem: MessageData, existTag?: TAG) {
     if (chatItem.status === 'end') return;
 
     // Se a conversa é do tipo 'tag', remove o TAG da lista
-    if (chatItem.status === 'tag' && existTag) {
-        const tagIndex = tagList.findIndex(tag => tag.id === existTag.id);
-        if (tagIndex > -1) {
-            tagList.splice(tagIndex, 1); // Remove o TAG associado ao chatItem da lista
-        }
+    const tagIndex = tagList.findIndex(tag => tag.id === chatItem.id);
+    if (tagIndex > -1) {
+        tagList.splice(tagIndex, 1); // Remove o TAG associado ao chatItem da lista
     }
-
+    
     // Envia uma mensagem de despedida
     const farewellMessage = 'Foi um prazer ajudar! 😊 Se precisar novamente, estou sempre aqui. Até logo! 👋';
     await session.sendText(chatItem.id, farewellMessage);
