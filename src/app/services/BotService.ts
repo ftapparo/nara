@@ -1,7 +1,7 @@
 import { create, Message, Whatsapp } from 'venom-bot';
 import { venomConfig } from '../../config/VenonConfig';
 import vehicleModels from '../../config/vehicleModels.json';
-import { findUserByCPF } from './FirebirdService';
+import { findUserByCPF, grantVehicleAccess } from './FirebirdService';
 
 const commonColors = ["Preto", "Chumbo", "Cinza", "Prata", "Branco", "Bege", "Amarelo", "Vermelho", "Azul", "Verde", "Outra"];
 const chatList: MessageData[] = [];
@@ -228,8 +228,8 @@ async function validateAndStoreCPF(existTag: TAG, message: Message) {
 
         const cpfExists = await findUserByCPF(cpf);
 
-        if (cpfExists) {
-            await session.sendText(message.from, `Ótimo, encontrei o CPF! Confirma o vínculo?\n\n*[ 1 ]* - Sim\n*[ 2 ]* - Não`);
+        if (cpfExists && cpfExists.CLASSIFICACAO != 99) {
+            await session.sendText(message.from, `Ótimo, parece que encontrei o CPF!\nO registro é de:\n*${cpfExists.NOME}*\nEssa informação esta correta ?\n\n*[ 1 ]* - Sim\n*[ 2 ]* - Não`);
             existTag.status = "tag2";
             existTag.cpf = cpf;
         } else {
@@ -342,9 +342,17 @@ async function requestTagPhoto(existTag: TAG, message: Message) {
 
 // Finalizar processo
 async function finalizeProcess(chatItem: MessageData, existTag: TAG) {
-    await session.sendText(chatItem.id, "Prontinho! 🥳 O processo foi concluído com sucesso e a sua TAG será ativada em até 24 horas. Obrigado por sua paciência!");
+    const success = await grantVehicleAccess(existTag.cpf, existTag.number, existTag.vehicle.plate, existTag.vehicle.brand, existTag.vehicle.model, existTag.vehicle.color);
+
+    if (success) {
+        await session.sendText(chatItem.id, "Prontinho! 🥳 O processo foi concluído com sucesso e a sua TAG será ativada em até 24 horas. Obrigado por sua paciência!");
+    } else {
+        await session.sendText(chatItem.id, "Ocorreu um erro ao tentar concluir o processo. Por favor, entre em contato com o suporte.");
+    }
+
     await endConversation(chatItem, existTag);
 }
+
 
 // Outras dúvidas
 async function handleOtherInquiries(chatItem: MessageData) {

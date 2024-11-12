@@ -1,12 +1,14 @@
 // src/app/controllers/FirebirdController.ts
 import { Request, Response } from 'express';
 import * as FirebirdService from '../services/FirebirdService';
+import { UserData } from '../services/FirebirdService';
 
 export const getUserByCPF = async (req: Request, res: Response) => {
     const cpf = req.params.cpf;
 
     try {
-        const user = await FirebirdService.findUserByCPF(cpf);
+        const user:UserData = await FirebirdService.findUserByCPF(cpf)
+
         if (user) {
             res.status(200).json(user);
         } else {
