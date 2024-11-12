@@ -8,10 +8,13 @@ export interface UserData {
     CLASSIFICACAO: number
 }
 
-// Função para obter uma conexão com o banco
+// Configura o pool de conexões
+const pool = firebird.pool(10, firebirdOptions); // Define um pool com até 10 conexões
+
+// Função para obter uma conexão do pool
 function getConnection(): Promise<firebird.Database> {
     return new Promise((resolve, reject) => {
-        firebird.attach(firebirdOptions, (err, db) => {
+        pool.get((err, db) => {
             if (err) {
                 reject(err);
             } else {
@@ -26,7 +29,7 @@ export async function executeQuery(query: string, params: any[] = []): Promise<a
     const db = await getConnection();
     return new Promise((resolve, reject) => {
         db.query(query, params, (err, result) => {
-            db.detach(); // Fecha a conexão após a consulta
+            db.detach(); // Libera a conexão de volta ao pool após a consulta
             if (err) {
                 reject(err);
             } else {
@@ -45,7 +48,7 @@ export async function findUserByCPF(cpf: string): Promise<UserData> {
         return {
             SEQUENCIA: 0,
             NOME: "",
-            CLASSIFICACAO: 0
+            CLASSIFICACAO: 99
         };
     } else {
         const data = results[0]; // Acessa o primeiro elemento do array
@@ -57,13 +60,16 @@ export async function findUserByCPF(cpf: string): Promise<UserData> {
     }
 }
 
+// Função para conceder acesso ao veículo, incluindo a inserção de fotos
 export async function grantVehicleAccess(
     cpf: string,
     tagVeiculo: string,
     placa: string,
     marca: string,
     modelo: string,
-    cor: string
+    cor: string,
+    tagPhoto: Buffer | null,       
+    vehiclePhoto: Buffer | null    
 ): Promise<boolean> {
     try {
         // Primeiro, busca o SEQUENCIA do proprietário
@@ -108,6 +114,17 @@ export async function grantVehicleAccess(
             vehicleSequencia
         ]);
 
+        // Decodifica as fotos de Base64 para binário
+        //const decodedVehiclePhoto = Buffer.from(vehiclePhoto, 'base64');
+        //const decodedTagPhoto = Buffer.from(tagPhoto, 'base64');
+
+        // Insere as fotos na tabela VEICULOSFOTO
+        const insertPhotoQuery = `
+            INSERT INTO VEICULOSFOTO (SEQVEICULO, FOTO, FOTOTAG)
+            VALUES (?, ?, ?)
+        `;      
+        await executeQuery(insertPhotoQuery, [vehicleSequencia, vehiclePhoto, tagPhoto]);
+     
         // Confirma se o acesso foi inserido corretamente
         const verifyAccessQuery = `
             SELECT * FROM IDACESSO WHERE SEQPESSOA = ? AND ID2 = ? AND VEICULO = ?
@@ -124,5 +141,3 @@ export async function grantVehicleAccess(
         return false; // Retorna false em caso de erro
     }
 }
-
-

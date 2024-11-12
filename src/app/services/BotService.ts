@@ -2,6 +2,10 @@ import { create, Message, Whatsapp } from 'venom-bot';
 import { venomConfig } from '../../config/VenonConfig';
 import vehicleModels from '../../config/vehicleModels.json';
 import { findUserByCPF, grantVehicleAccess } from './FirebirdService';
+import mime from 'mime-types';
+import fs from 'fs';
+import sharp from 'sharp';
+import path from 'path';
 
 const commonColors = ["Preto", "Chumbo", "Cinza", "Prata", "Branco", "Bege", "Amarelo", "Vermelho", "Azul", "Verde", "Outra"];
 const chatList: MessageData[] = [];
@@ -32,6 +36,8 @@ interface TAG {
         model: string;
         color: string;
     }
+    tagPhoto: Buffer | null;    
+    vehiclePhoto: Buffer | null;
     status: string;
     t: number;
 }
@@ -40,15 +46,37 @@ let session: Whatsapp;
 
 async function initializeBot() {
     return create(venomConfig)
-        .then((client: Whatsapp) => handleClientMessage(client))
+        .then(async (client: Whatsapp) => {
+            await handleClientMessage(client)
+            await adjustLocalStorage(client);
+        })
         .catch((error) => console.error('Erro ao criar o bot:', error));
+}
+
+async function adjustLocalStorage(client: Whatsapp) {
+    try {
+        // Acesse a página do navegador controlada pelo Venom-Bot
+        await client.page.evaluate(() => {
+            // Altera o valor de WALangPhonePref ou remove conforme desejado
+            localStorage.setItem('WALangPhonePref', 'en_US'); 
+            localStorage.setItem('WALangPrefDidMismatchWithCookie', 'false'); 
+            // Para remover, use:
+            // localStorage.removeItem('WALangPhonePref');
+        });
+        console.log("Configuração do localStorage ajustada.");
+    } catch (error) {
+        console.error("Erro ao ajustar o localStorage:", error);
+    }
 }
 
 async function handleClientMessage(client: Whatsapp) {
     session = client;
 
     session.onMessage(async (message) => {
-        if (message.body.length > 0) {
+
+        const messageBody = String(message.body)
+
+        if (messageBody.length > 0) {
             const userInput = message.body.trim().toLowerCase();
             const existMessage = chatList.find((msg) => msg.id === message.from);
 
@@ -122,7 +150,7 @@ function storeUserMessage(message: Message, status?: string) {
 
 // Função para enviar uma mensagem de boas-vindas	
 async function sendGreetingMessage(sendTo: string) {
-    const greetingMessage = '*Olá, bem-vindo(a)!*\nEu sou a NARA, sua Assistente Residencial Virtual! 🏢✨\nEstou aqui para facilitar a sua vida no condomínio e ajudar no que precisar. 😊';
+    const greetingMessage = '*🏢 Olá, bem-vindo(a)! ✨*\nEu sou a NARA, sua Assistente Residencial Virtual!\nEstou aqui para facilitar a sua vida no condomínio e ajudar no que precisar. 😊';
     await session.sendText(sendTo, greetingMessage);
 }
 
@@ -160,6 +188,8 @@ async function handleTagActivation(chatItem: MessageData, message: Message) {
             cpf: '',
             number: '',
             vehicle: { plate: '', brand: '', model: '', color: '' },
+            tagPhoto: null,
+            vehiclePhoto: null,
             status: 'tag0',
             t: Date.now(),
         };
@@ -171,8 +201,7 @@ async function handleTagActivation(chatItem: MessageData, message: Message) {
 
     switch (existTag.status) {
         case "tag0":
-            await session.sendText(message.from, "Vamos nessa! Primeiro, me diga o CPF que será vinculado à TAG.");
-            existTag.status = "tag1";
+            await startTAGRegister(existTag, message);
             break;
 
         case "tag1":
@@ -212,7 +241,7 @@ async function handleTagActivation(chatItem: MessageData, message: Message) {
             break;
 
         case "tag10":
-            await finalizeProcess(chatItem, existTag);
+            await requestVehiclePhoto(chatItem, existTag, message);
             break;
 
         default:
@@ -220,6 +249,12 @@ async function handleTagActivation(chatItem: MessageData, message: Message) {
             break;
     }
 }
+
+async function startTAGRegister(existTag: TAG, message: Message) {
+    await session.sendText(message.from, "Vamos nessa! Primeiro, me diga o CPF que será vinculado à TAG.");
+    existTag.status = "tag1";
+}
+
 
 // Subfunções de cada passo do fluxo de ativação de TAG
 async function validateAndStoreCPF(existTag: TAG, message: Message) {
@@ -256,7 +291,7 @@ async function validateAndStoreTagNumber(existTag: TAG, message: Message) {
     const tagNumber = message.body.trim();
     if (/^\d{10}$/.test(tagNumber)) {
         existTag.number = tagNumber;
-        await session.sendText(message.from, "Agora informe a placa do veículo (ex: ABC123 ou ABC1D23).");
+        await session.sendText(message.from, "Agora informe a placa do veículo (ex: XXX1234 ou XXX1X23).");
         existTag.status = "tag4";
     } else {
         await session.sendText(message.from, "Ops! O número da TAG precisa ter exatamente 10 dígitos. Tente novamente.");
@@ -326,33 +361,115 @@ async function selectVehicleColor(existTag: TAG, message: Message) {
 // Confirma dados do veículo
 async function confirmVehicleData(existTag: TAG, message: Message) {
     if (message.body.toLowerCase() === "sim") {
-        await session.sendText(message.from, "Perfeito! Agora, vou precisar que tire uma foto da TAG já instalada no carro para eu registrar.");
+        await session.sendText(
+            message.from,
+            "Perfeito! Agora, vou precisar que tire uma foto da TAG já instalada no carro para eu registrar."
+        );
         existTag.status = "tag9";
     } else {
-        await session.sendText(message.from, "Processo cancelado! Caso queira recomeçar, basta me chamar novamente.");
+        await session.sendText(
+            message.from,
+            "Certo, vamos apagar tudo e começar novamente, com calma dessa vez. 😊"
+        );
         existTag.status = "tag0";
+        await startTAGRegister(existTag, message);
+    }
+}
+
+async function downloadAndResizeImage(client: Whatsapp, message: Message): Promise<Buffer | null> {
+    try {
+        // Baixa e decodifica o arquivo diretamente para um buffer
+        const buffer = await client.decryptFile(message);
+
+        // Redimensiona e faz o crop centralizado para 720x720
+        const resizedBuffer = await sharp(buffer)
+            .resize(720, 720, {
+                fit: sharp.fit.cover, // Redimensiona com crop para um quadrado
+                position: sharp.strategy.entropy, // Centraliza na área de maior "interesse" (usando entropia)
+            })
+            .toBuffer();
+
+        return resizedBuffer;
+    } catch (error) {
+        console.error("Erro ao redimensionar a imagem:", error);
+        return null;
     }
 }
 
 // Tirar foto da TAG
 async function requestTagPhoto(existTag: TAG, message: Message) {
-    await session.sendText(message.from, "Quase lá! Agora, eu preciso de uma foto do carro de frente, com a placa bem visível. Assim conseguimos validar tudo direitinho!");
-    existTag.status = "tag10";
+    if (message.type === "image" && message.body) {
+        const imageData = await downloadAndResizeImage(session, message);
+        if (imageData) {
+            existTag.tagPhoto = imageData; // Salva a foto da TAG em alta resolução (Base64)
+            await session.sendText(
+                message.from,
+                "Quase lá! Agora, eu preciso de uma foto do carro de frente, com a placa bem visível. Assim conseguimos validar tudo direitinho!"
+            );
+            existTag.status = "tag10";
+        } else {
+            await session.sendText(
+                message.from,
+                "Não consegui baixar a imagem. Por favor, envie novamente uma foto da TAG instalada no carro."
+            );
+        }
+    } else {
+        await session.sendText(
+            message.from,
+            "Parece que não recebi uma foto. Por favor, envie uma imagem da TAG instalada no carro."
+        );
+    }
+}
+
+// Tirar foto do veículo
+async function requestVehiclePhoto(chatItem: MessageData, existTag: TAG, message: Message) {
+    if (message.type === "image" && message.body) {
+        const imageData = await downloadAndResizeImage(session, message);
+        if (imageData) {
+            existTag.vehiclePhoto = imageData; // Salva a foto do veículo em alta resolução (Base64)
+            existTag.status = "finalizing";
+            await finalizeProcess(chatItem, existTag);
+        } else {
+            await session.sendText(
+                message.from,
+                "Não consegui baixar a imagem. Por favor, envie uma foto do carro de frente com a placa visível."
+            );
+        }
+    } else {
+        await session.sendText(
+            message.from,
+            "Não recebi uma imagem. Envie uma foto do carro de frente com a placa visível."
+        );
+    }
 }
 
 // Finalizar processo
 async function finalizeProcess(chatItem: MessageData, existTag: TAG) {
-    const success = await grantVehicleAccess(existTag.cpf, existTag.number, existTag.vehicle.plate, existTag.vehicle.brand, existTag.vehicle.model, existTag.vehicle.color);
+    const success = await grantVehicleAccess(
+        existTag.cpf,
+        existTag.number,
+        existTag.vehicle.plate,
+        existTag.vehicle.brand,
+        existTag.vehicle.model,
+        existTag.vehicle.color,
+        existTag.tagPhoto,       
+        existTag.vehiclePhoto
+    );
 
     if (success) {
-        await session.sendText(chatItem.id, "Prontinho! 🥳 O processo foi concluído com sucesso e a sua TAG será ativada em até 24 horas. Obrigado por sua paciência!");
+        await session.sendText(
+            chatItem.id,
+            "Prontinho! 🥳 O processo foi concluído com sucesso e a sua TAG será ativada em até 24 horas. Obrigado por sua paciência!"
+        );
     } else {
-        await session.sendText(chatItem.id, "Ocorreu um erro ao tentar concluir o processo. Por favor, entre em contato com o suporte.");
+        await session.sendText(
+            chatItem.id,
+            "Ocorreu um erro ao tentar concluir o processo. Por favor, entre em contato com o suporte."
+        );
     }
 
     await endConversation(chatItem, existTag);
 }
-
 
 // Outras dúvidas
 async function handleOtherInquiries(chatItem: MessageData) {
