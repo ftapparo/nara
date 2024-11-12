@@ -1,7 +1,7 @@
 import { create, Message, Whatsapp } from 'venom-bot';
 import { venomConfig } from '../../config/VenonConfig';
 import vehicleModels from '../../config/vehicleModels.json';
-import { findUserByCPF, grantVehicleAccess } from './FirebirdService';
+import { findUserByCPF, grantVehicleAccess, isTagOrPlateDuplicate } from './FirebirdService';
 import mime from 'mime-types';
 import fs from 'fs';
 import sharp from 'sharp';
@@ -9,7 +9,7 @@ import path from 'path';
 
 const commonColors = ["Preto", "Chumbo", "Cinza", "Prata", "Branco", "Bege", "Amarelo", "Vermelho", "Azul", "Verde", "Outra"];
 const chatList: MessageData[] = [];
-const tagList: TAG[] = [];
+let tagList: TAG[] = [];
 
 interface MessageData {
     id: string;
@@ -82,15 +82,19 @@ async function handleClientMessage(client: Whatsapp) {
 
             if (!existMessage) {
                 await initiateConversation(message);
+
             } else {
                 const inactiveTimeExceeded = (Date.now() - existMessage.t) > (10 * 60 * 1000) || existMessage.status === 'end';
 
                 if (inactiveTimeExceeded) {
                     await resetConversation(existMessage, message);
+
                 } else if (userInput === "fim" || userInput === "cancelar") {
                     await endConversation(existMessage);
+
                 } else if (existMessage.status === 'tag') {
                     await handleTagActivation(existMessage, message);
+
                 } else {
                     await handleMenuSelection(existMessage, message);
                 }
@@ -112,11 +116,17 @@ async function initiateConversation(message: Message) {
 
 // Função para resetar uma conversa inativa ou encerrada
 async function resetConversation(chatItem: MessageData, message: Message) {
+     
+    // Remove o TAG da lista
+    removeTagsById(chatItem.id)
+    
     storeUserMessage(message, "menu");
+    
     await session.sendText(
         chatItem.id,
         'Olá novamente! Fico feliz por voltar a conversar com você.\n Lembre-se é só responder com o número da opção desejada, eu vou cuidar do resto.\nSe desejar encerrar essa conversa, basta digitar a palavra FIM a qualquer momento.'
     );
+
     await sendOptionsMenu(chatItem.id);
 }
 
@@ -361,11 +371,28 @@ async function selectVehicleColor(existTag: TAG, message: Message) {
 // Confirma dados do veículo
 async function confirmVehicleData(existTag: TAG, message: Message) {
     if (message.body.toLowerCase() === "sim") {
-        await session.sendText(
-            message.from,
-            "Perfeito! Agora, vou precisar que tire uma foto da TAG já instalada no carro para eu registrar."
-        );
-        existTag.status = "tag9";
+        // Verifica se o TAG ou a placa já estão cadastrados
+        const isDuplicate = await isTagOrPlateDuplicate(existTag.number, existTag.vehicle.plate);
+
+        if (isDuplicate) {
+            await session.sendText(
+                message.from,
+                "Ops! Parece que o número da TAG ou a placa informada já estão cadastrados. Se você tiver certeza dos dados, por favor, entre em contato com a administração para verificar. Caso contrário, você pode corrigir e recomeçar o processo."
+            );
+            // Reinicia o processo desde o início, se necessário
+
+            // Remove o TAG da lista
+            removeTagsById(existTag.id)
+
+            existTag.status = "tag0";
+            await startTAGRegister(existTag, message);
+        } else {
+            await session.sendText(
+                message.from,
+                "Perfeito! Agora, vou precisar que tire uma foto da TAG já instalada no carro para eu registrar."
+            );
+            existTag.status = "tag9";
+        }
     } else {
         await session.sendText(
             message.from,
@@ -375,6 +402,7 @@ async function confirmVehicleData(existTag: TAG, message: Message) {
         await startTAGRegister(existTag, message);
     }
 }
+
 
 async function downloadAndResizeImage(client: Whatsapp, message: Message): Promise<Buffer | null> {
     try {
@@ -483,12 +511,9 @@ async function endConversation(chatItem: MessageData, existTag?: TAG) {
     // Evita encerrar novamente se a conversa já está marcada como 'end'
     if (chatItem.status === 'end') return;
 
-    // Se a conversa é do tipo 'tag', remove o TAG da lista
-    const tagIndex = tagList.findIndex(tag => tag.id === chatItem.id);
-    if (tagIndex > -1) {
-        tagList.splice(tagIndex, 1); // Remove o TAG associado ao chatItem da lista
-    }
-    
+    // Remove o TAG da lista
+    removeTagsById(chatItem.id)
+        
     // Envia uma mensagem de despedida
     const farewellMessage = 'Foi um prazer ajudar! 😊 Se precisar novamente, estou sempre aqui. Até logo! 👋';
     await session.sendText(chatItem.id, farewellMessage);
@@ -502,6 +527,11 @@ async function restartProcess(message: Message, existTag: TAG) {
     await session.sendText(message.from, "Parece que houve um probleminha. Vamos recomeçar do início, tudo bem?");
     await session.sendText(message.from, "Para isso, por favor, informe novamente o CPF que será vinculado à TAG.");
     existTag.status = "tag1";
+}
+
+// Função para remover todas as entradas de TAG com o mesmo ID
+function removeTagsById(id: string) {
+    tagList = tagList.filter(tag => tag.id !== id);
 }
 
 // Função para obter a lista de chats

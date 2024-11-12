@@ -60,6 +60,19 @@ export async function findUserByCPF(cpf: string): Promise<UserData> {
     }
 }
 
+// Função para verificar duplicidade de TAG ou placa
+export async function isTagOrPlateDuplicate(tagNumber: string, vehiclePlate: string): Promise<boolean> {
+    const query = `
+        SELECT 1 FROM VEICULOS 
+        WHERE TAGVEICULO = ? OR PLACA = ?
+        ROWS 1
+    `;
+    const results = await executeQuery(query, [tagNumber, vehiclePlate]);
+
+    return results && results.length > 0; // Retorna true se houver duplicidade, caso contrário false
+}
+
+
 // Função para conceder acesso ao veículo, incluindo a inserção de fotos
 export async function grantVehicleAccess(
     cpf: string,
